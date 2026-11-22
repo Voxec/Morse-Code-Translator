@@ -1,91 +1,76 @@
-# Morse Code Translator – ESP32 Bluetooth Köprüsü (HC-05 Emülasyonu)
+# Morse Code Translator - ESP32 Bluetooth Bridge
 
-Amaç: Arduino + HC-05 mantığıyla çalışmak. HC-05 yerine **klasik ESP32** kullanılır; ESP32 UART üzerinden komut alan bir Bluetooth modülü gibi davranır (`src/bt_bridge.cpp`). Ana kontrolcü (Arduino rolündeki ESP32) bu köprüyle UART üzerinden konuşur.
+The project uses four ESP32-WROOM-32 boards: two tester/controllers and two Bluetooth bridges. Each tester encodes outgoing text as Morse timing bits and decodes received bit frames. Each bridge provides a UART-to-Bluetooth Classic SPP link.
 
-> ESP32-S3 sadece BLE destekler, SPP (Bluetooth Classic) yoktur. Köprü için **klasik ESP32 (`esp32dev`)** gerekir. Ana kontrolcü herhangi bir kart olabilir.
+## System layout
 
-## Sistem yapısı
-
-```
- Sistem A                                   Sistem B
- [Ana ESP32] <--UART--> [Köprü ESP32] ~~Bluetooth SPP~~ [Köprü ESP32] <--UART--> [Ana ESP32]
-              9600 baud   (slave)                         (master)     9600 baud
+```text
+System A                                      System B
+[Tester ESP32] <--UART--> [Bridge ESP32] ~~Bluetooth SPP~~ [Bridge ESP32] <--UART--> [Tester ESP32]
+                 9600 baud (slave)                          (master) 9600 baud
 ```
 
-Her sistemde 2 ESP32 vardır: ana kontrolcü ve köprü. Köprü firmware'i iki sistemde de aynıdır, rol komutla seçilir.
+The bridge firmware is identical on both systems. Configure one as the Bluetooth slave and the other as master using AT commands.
 
-## Dosyalar
+## Files
 
-| Dosya | Görev |
+| File | Purpose |
 |---|---|
-| `src/bt_bridge.cpp` | Köprü firmware'i (`env:bt_bridge`) |
-| `src/bt_tester.cpp` | Test kontrolcüsü; USB monitörden yazdığını köprüye iletir (`env:bt_tester`) |
-| `platformio.ini` | Ortam tanımları |
+| `src/bt_tester.cpp` | Tester firmware (`env:bt_tester`) |
+| `src/morse_codec.cpp`, `include/morse_codec.h` | Morse text/OOK timing-bit encoder and decoder |
+| `src/bt_bridge.cpp` | Bluetooth SPP to UART bridge (`env:bt_bridge`) |
+| `platformio.ini` | PlatformIO environments |
 
-## Kablolama (3.3V mantık, çapraz bağlantı)
+## Morse data path
 
-| Köprü ESP32 | Ana ESP32 |
+Enter a message in the tester's USB serial monitor and submit the line. Supported characters are A-Z and 0-9. The tester applies the timing-bit rules from the supplied `morse.c`: dot = `1`, dash = `111`, intra-letter gap = `0`, letter gap = `000`, and word gap = `0000000`.
+
+The tester sends an ASCII frame in the form `M:<bits>`. The bridges forward the line over Bluetooth SPP and UART. The receiving tester recognizes the `M:` frame and decodes the bit stream back into text. This transports digital timing data; it does not generate a GPIO pulse, sound, or light waveform.
+
+Use `AT`, `AT+NAME=...`, `AT+ROLE=...`, `AT+INQ`, and `AT+LINK=...` from the tester serial monitor to configure its attached bridge. Ordinary text is encoded and sent as a Morse frame.
+
+## Wiring
+
+Connect UART2 with crossed TX/RX lines and common ground (3.3 V logic):
+
+| Bridge ESP32 | Tester ESP32 |
 |---|---|
-| GPIO17 (TX2) | RX pini (testerda GPIO16) |
-| GPIO16 (RX2) | TX pini (testerda GPIO17) |
+| GPIO17 (TX2) | GPIO16 (RX2) |
+| GPIO16 (RX2) | GPIO17 (TX2) |
 | GND | GND |
 
-Pinler `BRIDGE_RX` / `BRIDGE_TX` (köprü) ve `HC_RX` / `HC_TX` (tester) ile değiştirilebilir. UART hızı 9600'dür.
+UART is 9600 baud; USB serial monitoring is 115200 baud.
 
-## Yükleme
+## Build and upload
 
+```sh
+pio run -e bt_bridge -t upload     # upload to both bridge boards
+pio run -e bt_tester -t upload     # upload to both tester boards
+pio device monitor -b 115200
 ```
-pio run -e bt_bridge -t upload     # köprü kartı
-pio run -e bt_tester -t upload     # test kontrolcü kartı
-pio device monitor -b 115200       # "Both NL & CR" ile
-```
 
-## AT komutları
+## Two-system Bluetooth setup
 
-Komutlar `\r\n` ile biter. `AT` ile başlayan her satır komut sayılır. Diğer satırlar veri olarak Bluetooth'tan gönderilir.
+On System A's tester, configure its bridge as the slave:
 
-| Komut | Cevap / Etki |
-|---|---|
-| `AT` | `OK` |
-| `AT+NAME?` / `AT+NAME=<ad>` | adı sorgular / değiştirir |
-| `AT+ROLE?` | `+ROLE:0` veya `+ROLE:1` |
-| `AT+ROLE=0` / `AT+ROLE=1` | slave (görünür, bağlantı bekler) / master (tarar, bağlanır) |
-| `AT+INQ` | Sadece master. Yaklaşık 8 sn tarar, `+INQ:<idx>,<mac>,<rssi>,<ad>` satırları ve `OK` döner |
-| `AT+LINK=<idx\|MAC\|ad>` | Sadece master. Cihaza bağlanır (`OK` / `ERROR:LINK`) |
-| `AT+DISC` | Bağlantıyı keser |
-| `AT+STATE?` | `+STATE:CONNECTED` veya `+STATE:DISCONNECTED` |
-
-Otomatik olaylar: `+CONNECTED`, `+DISCONNECTED`.
-Hatalar: `ERROR:NOT_MASTER`, `ERROR:BAD_INDEX`, `ERROR:SCAN`, `ERROR:LINK`, `ERROR:UNKNOWN`.
-
-`AT+NAME` ve `AT+ROLE` komutları Bluetooth'u yeniden başlatır ve eski tarama listesini siler. Ayarlar kalıcı değildir, her açılışta slave ve `HC05-A` adıyla başlar.
-
-## Kullanım senaryoları
-
-### 1. Telefonla test
-1. Köprüyü yükle ve çalıştır. Bluetooth adı `HC05-A`.
-2. Telefonda eşleş ve "Serial Bluetooth Terminal" uygulamasını aç.
-3. Ana ESP32'den gönderilen satırlar telefonda görünür. Telefondan yazılanlar ana ESP32'nin UART'ına gelir.
-
-### 2. İki sistemi haberleştirme
-Sistem A (slave), ana ESP32'den köprüye:
-```
+```text
 AT+NAME=HC05-A
 AT+ROLE=0
 ```
-Sistem B (master):
-```
+
+On System B's tester, configure its bridge as master, scan, then connect to the slave:
+
+```text
 AT+ROLE=1
-AT+INQ            -> +INQ:0,24:6F:28:AA:BB:CC,-55,HC05-A ... OK
-AT+LINK=0         -> OK, ardından +CONNECTED
+AT+INQ
+AT+LINK=0
 ```
-Bağlantı kurulunca iki ana ESP32 arasında çift yönlü şeffaf UART hattı oluşur. Bir tarafın yazdığı satır (`AT` ile başlamayan) diğer tarafın UART'ına gelir. Bağlantıyı kesmek için `AT+DISC` gönder.
 
-### 3. Ana ESP32'de tarama listesini okuma
-Ana ESP32 `AT+INQ` gönderir, ardından `OK` gelene kadar gelen satırları okur. `+INQ:` ile başlayanları `,` ile ayırarak (idx, mac, rssi, ad) listeye ekler. Seçilen cihaz için `AT+LINK=<idx>` gönderir.
+After `+CONNECTED`, type text on either tester to send it. Bridge commands must be submitted as uppercase `AT` or `AT+...` lines; other text is encoded as Morse.
 
-## Bilinen sınırlamalar
-- Köprü aynı anda hem master hem slave olamaz. Bağlantıyı başlatan taraf master olmalıdır.
-- `AT+INQ` yaklaşık 8 sn bloklar. Bu sürede köprü diğer veriyi işlemez.
-- Veri `\n` ile biten satırlar halinde taşınır. `AT` ile başlayan veri satırları komut olarak yorumlanır. Morse protokolünde bu önekten kaçınılmalı.
-- Kod henüz kart üzerinde test edilmedi.
+## Limitations
+
+- A bridge cannot be master and slave simultaneously; the master initiates the connection.
+- Inquiry blocks the bridge for about 8 seconds.
+- Transport uses newline-delimited ASCII frames and the current bridge firmware's line buffer is unbounded.
+- The full four-board Morse path still needs verification on the physical boards.
