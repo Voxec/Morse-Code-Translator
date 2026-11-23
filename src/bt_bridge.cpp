@@ -20,7 +20,10 @@
 #define BRIDGE_TX 17
 #define UART_BAUD 9600
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 BluetoothSerial SerialBT;
+#pragma GCC diagnostic pop
 String btName = "HC05-A";
 bool isMaster = false;
 bool wasConnected = false;
